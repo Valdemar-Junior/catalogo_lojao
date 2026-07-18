@@ -25,6 +25,8 @@ const selectedSource = getArgValue('--source')
 const selectedPriceTableId = getArgValue('--price-table-id')
 const selectedCampaign = getArgValue('--campaign')
 const selectedVigente = process.argv.includes('--vigente')
+// Light refresh: only re-read quantities for products already synced (no catalog scan).
+const selectedStockOnly = process.argv.includes('--stock-only')
 const selectedLimit = toNullableInteger(getArgValue('--limit'))
 const selectedCodes = getSelectedCodes()
 
@@ -63,10 +65,16 @@ if (integrationSources.length === 0) {
 }
 
 for (const source of integrationSources) {
-  await syncSource(source)
+  if (selectedStockOnly) {
+    await syncStockOnly(source)
+  } else {
+    await syncSource(source)
+  }
 }
 
-await pruneVariantProducts()
+if (!selectedStockOnly) {
+  await pruneVariantProducts()
+}
 
 console.log(`Sync completed for ${integrationSources.length} source(s).`)
 
@@ -359,6 +367,210 @@ async function pruneVariantProducts() {
   if (removed > 0) {
     console.log(`pruned ${removed} grade product(s) that duplicate variants`)
   }
+}
+
+// Light refresh: re-read only the quantities of a campaign's already-synced products,
+// skipping the heavy catalog scan (prices/membership don't change during a campaign).
+async function syncStockOnly(source) {
+  const token = process.env[source.env_token_name]
+  if (!token) {
+    console.warn(`[${source.source_key}] skipped: env token ${source.env_token_name} is empty.`)
+    return
+  }
+
+  const externalIds = selectedPriceTableId
+    ? [Number(selectedPriceTableId)]
+    : await getVigenteCampaignExternalIds()
+
+  if (externalIds.length === 0) {
+    console.warn(`[${source.source_key}] stock-only: no campaign to refresh.`)
+    return
+  }
+
+  console.log(`[${source.source_key}] stock-only refresh for price tables ${externalIds.join(', ')}`)
+  const syncRunId = await createSyncRun(source.id)
+
+  try {
+    const { productMap, variantMap, codes } = await getCampaignItems(source.id, externalIds)
+
+    if (codes.length === 0) {
+      console.warn(`[${source.source_key}] stock-only: no synced products for these tables.`)
+      await updateSyncRun(syncRunId, {
+        status: 'success',
+        finished_at: new Date().toISOString(),
+        metadata: { stock_only: true, codes: 0 }
+      })
+      return
+    }
+
+    console.log(`[${source.source_key}] fetching stock for ${codes.length} codes`)
+    const stocks = await fetchStocksByCodes(source.sgi_base_url, token, codes)
+    const stockSyncResult = await upsertStocks(source.id, stocks, productMap, variantMap, syncRunId)
+
+    await updateSyncRun(syncRunId, {
+      status: 'success',
+      finished_at: new Date().toISOString(),
+      records_received: stocks.length,
+      records_upserted: stockSyncResult.changedCurrentRows + stockSyncResult.insertedSnapshots,
+      metadata: {
+        stock_only: true,
+        codes: codes.length,
+        stock_rows_changed: stockSyncResult.changedCurrentRows
+      }
+    })
+
+    console.log(
+      `[${source.source_key}] stock-only done: ${codes.length} codes, ${stockSyncResult.changedCurrentRows} quantities updated`
+    )
+  } catch (error) {
+    await updateSyncRun(syncRunId, {
+      status: 'failed',
+      finished_at: new Date().toISOString(),
+      error_message: error instanceof Error ? error.message : String(error)
+    })
+    throw error
+  }
+}
+
+async function getVigenteCampaignExternalIds() {
+  const { data, error } = await supabase
+    .from('price_tables')
+    .select('external_id')
+    .lte('validade_inicial', TODAY)
+    .gte('validade_final', TODAY)
+    .lt('validade_final', CAMPAIGN_END_SENTINEL)
+
+  if (error) {
+    throw error
+  }
+
+  return [...new Set((data ?? []).map((row) => Number(row.external_id)))]
+}
+
+// Load the codes + external_id->db_id maps for a source's products/variants that are
+// priced in the given campaign price tables (so we know exactly what to re-read).
+async function getCampaignItems(integrationSourceId, externalIds) {
+  const productMap = new Map()
+  const variantMap = new Map()
+  const codes = new Set()
+
+  const { data: tables, error: tablesError } = await supabase
+    .from('price_tables')
+    .select('id')
+    .eq('integration_source_id', integrationSourceId)
+    .in('external_id', externalIds)
+
+  if (tablesError) {
+    throw tablesError
+  }
+
+  const tableIds = (tables ?? []).map((row) => row.id)
+  if (tableIds.length === 0) {
+    return { productMap, variantMap, codes: [] }
+  }
+
+  const productIds = new Set()
+  for (const idsChunk of chunk(tableIds, UPSERT_BATCH_SIZE)) {
+    const { data, error } = await supabase
+      .from('product_prices')
+      .select('product_id')
+      .in('price_table_id', idsChunk)
+    if (error) {
+      throw error
+    }
+    for (const row of data ?? []) {
+      productIds.add(row.product_id)
+    }
+  }
+
+  for (const idsChunk of chunk([...productIds], UPSERT_BATCH_SIZE)) {
+    const { data, error } = await supabase
+      .from('products')
+      .select('id, external_id, codigo')
+      .in('id', idsChunk)
+    if (error) {
+      throw error
+    }
+    for (const row of data ?? []) {
+      productMap.set(Number(row.external_id), row.id)
+      if (row.codigo) {
+        codes.add(row.codigo)
+      }
+    }
+  }
+
+  const variantIds = new Set()
+  for (const idsChunk of chunk(tableIds, UPSERT_BATCH_SIZE)) {
+    const { data, error } = await supabase
+      .from('product_variant_prices')
+      .select('variant_id')
+      .in('price_table_id', idsChunk)
+    if (error) {
+      throw error
+    }
+    for (const row of data ?? []) {
+      variantIds.add(row.variant_id)
+    }
+  }
+
+  for (const idsChunk of chunk([...variantIds], UPSERT_BATCH_SIZE)) {
+    const { data, error } = await supabase
+      .from('product_variants')
+      .select('id, external_id, codigo')
+      .in('id', idsChunk)
+    if (error) {
+      throw error
+    }
+    for (const row of data ?? []) {
+      variantMap.set(Number(row.external_id), row.id)
+      if (row.codigo) {
+        codes.add(row.codigo)
+      }
+    }
+  }
+
+  return { productMap, variantMap, codes: [...codes] }
+}
+
+async function fetchStocksByCodes(baseUrl, token, codes) {
+  const results = []
+  const CONCURRENCY = 12
+
+  for (let index = 0; index < codes.length; index += CONCURRENCY) {
+    const batch = codes.slice(index, index + CONCURRENCY)
+    const responses = await Promise.all(
+      batch.map((code) => fetchStockByCode(baseUrl, token, code))
+    )
+    for (const items of responses) {
+      results.push(...items)
+    }
+  }
+
+  return results
+}
+
+async function fetchStockByCode(baseUrl, token, code) {
+  const url = new URL(`${API_PATH}/estoques`, baseUrl)
+  url.searchParams.set('token', token)
+  url.searchParams.set('codigo', code)
+  url.searchParams.set('ativo', 'true')
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(url, { headers: { Accept: 'application/json' } })
+      if (!response.ok) {
+        throw new Error(`status ${response.status}`)
+      }
+      const json = await response.json()
+      return Array.isArray(json.estoques) ? json.estoques : []
+    } catch (error) {
+      if (attempt === 3) {
+        throw new Error(`SGI request failed (estoques, codigo ${code}): ${error.message}`)
+      }
+    }
+  }
+
+  return []
 }
 
 async function getIntegrationSources(client, sourceKey) {

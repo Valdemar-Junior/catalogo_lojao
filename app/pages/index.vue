@@ -40,10 +40,37 @@ const selectedCampaign = computed(() =>
 
 const {
   data: campaignData,
-  pending: campaignPending
+  pending: campaignPending,
+  refresh: refreshCampaignData
 } = await useFetch('/api/campaigns/current', {
   query: computed(() => ({ priceTableId: selectedCampaignId.value ?? undefined }))
 })
+
+const refreshing = ref(false)
+const refreshMessage = ref('')
+
+async function refreshStock() {
+  if (refreshing.value || !selectedCampaignId.value) {
+    return
+  }
+
+  refreshing.value = true
+  refreshMessage.value = ''
+  try {
+    const result = await $fetch<{ throttled?: boolean; secondsAgo?: number }>(
+      '/api/refresh-stock',
+      { method: 'POST', query: { priceTableId: selectedCampaignId.value } }
+    )
+    await refreshCampaignData()
+    refreshMessage.value = result?.throttled
+      ? `Estoque já atualizado há ${result.secondsAgo ?? 0}s.`
+      : 'Estoque atualizado.'
+  } catch {
+    refreshMessage.value = 'Não foi possível atualizar agora.'
+  } finally {
+    refreshing.value = false
+  }
+}
 
 const {
   data: searchData,
@@ -139,6 +166,26 @@ useHead({
         :campaign-name="heroName"
         :item-count="campaignData?.items?.length || 0"
       />
+
+      <div
+        v-if="hasActiveCampaign"
+        class="flex flex-wrap items-center gap-3"
+      >
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-full border border-[var(--stroke)] bg-white px-4 py-2 text-sm font-medium text-[var(--ink)] transition hover:border-[var(--brand)] disabled:opacity-60"
+          :disabled="refreshing"
+          @click="refreshStock"
+        >
+          {{ refreshing ? 'Atualizando estoque...' : 'Atualizar estoque' }}
+        </button>
+        <span
+          v-if="refreshMessage"
+          class="text-xs text-[var(--ink-soft)]"
+        >
+          {{ refreshMessage }}
+        </span>
+      </div>
 
       <div
         v-if="campaigns.length > 1"
