@@ -50,9 +50,8 @@ function selectImage(imageId: string) {
   selectedImageId.value = imageId
 }
 
-function handleVariantChange(event: Event) {
-  const target = event.target as HTMLSelectElement
-  selectedVariantCode.value = target.value || null
+function selectVariant(codigo: string) {
+  selectedVariantCode.value = codigo
 }
 
 function formatCurrency(value: number | null | undefined) {
@@ -153,26 +152,39 @@ useHead(() => ({
               v-if="product.variants?.length"
               class="mt-6 space-y-2"
             >
-              <label
-                for="variant-select"
-                class="block text-xs font-medium uppercase tracking-[0.18em] text-[var(--ink-soft)]"
-              >
-                Variacao
-              </label>
-              <select
-                id="variant-select"
-                :value="selectedVariantCode || ''"
-                class="w-full rounded-[18px] border border-[var(--line)] bg-white px-4 py-3 text-sm text-[var(--ink)] outline-none"
-                @change="handleVariantChange"
-              >
-                <option
+              <div class="block text-xs font-medium uppercase tracking-[0.18em] text-[var(--ink-soft)]">
+                Variacao ({{ product.variants.length }})
+              </div>
+              <div class="flex flex-wrap gap-3">
+                <button
                   v-for="variant in product.variants"
                   :key="variant.codigo"
-                  :value="variant.codigo"
+                  type="button"
+                  class="flex w-[84px] flex-col items-center gap-1 rounded-[18px] border p-2 text-center transition"
+                  :class="variant.codigo === selectedVariantCode
+                    ? 'border-[var(--brand)] ring-2 ring-[var(--brand)]'
+                    : 'border-[var(--line)] opacity-90 hover:border-[var(--brand)] hover:opacity-100'"
+                  :title="variant.label"
+                  @click="selectVariant(variant.codigo)"
                 >
-                  {{ variant.label }}
-                </option>
-              </select>
+                  <img
+                    v-if="variant.primaryImage?.url"
+                    :src="variant.primaryImage.url"
+                    :alt="variant.codigo"
+                    class="aspect-square w-full rounded-[12px] object-cover"
+                    loading="lazy"
+                  >
+                  <div
+                    v-else
+                    class="flex aspect-square w-full items-center justify-center rounded-[12px] bg-[var(--surface-muted)] text-[10px] text-[var(--ink-soft)]"
+                  >
+                    sem foto
+                  </div>
+                  <span class="text-xs font-medium text-[var(--ink)]">
+                    {{ variant.codigo }}
+                  </span>
+                </button>
+              </div>
             </div>
 
             <div class="mt-6 grid grid-cols-2 gap-3">
@@ -181,13 +193,13 @@ useHead(() => ({
                   Estoque total
                 </div>
                 <div class="mt-2 text-2xl font-semibold text-[var(--success)]">
-                  {{ product.stock?.total ?? 0 }}
+                  {{ activeItem?.stock?.total ?? 0 }}
                 </div>
                 <div
-                  v-if="selectedVariant"
+                  v-if="product.variants?.length"
                   class="mt-1 text-xs text-[var(--ink-soft)]"
                 >
-                  {{ selectedVariant.label }}: {{ selectedVariant.stock?.total ?? 0 }}
+                  Todas as variacoes: {{ product.stock?.total ?? 0 }}
                 </div>
               </div>
 
@@ -196,7 +208,7 @@ useHead(() => ({
                   Preco atual
                 </div>
                 <div class="mt-2 text-xl font-semibold text-[var(--accent)]">
-                  {{ formatCurrency(product.prices?.[0]?.amount) }}
+                  {{ formatCurrency(activeItem?.prices?.[0]?.amount) }}
                 </div>
               </div>
             </div>
@@ -208,7 +220,7 @@ useHead(() => ({
             </h2>
             <div class="mt-4 space-y-3">
               <div
-                v-for="stock in product.stock?.bySource || []"
+                v-for="stock in activeItem?.stock?.bySource || []"
                 :key="`${stock.sourceKey}-${stock.branch?.slug || 'sem-filial'}`"
                 class="rounded-[22px] border border-[var(--line)] bg-white/70 p-4"
               >
@@ -233,7 +245,7 @@ useHead(() => ({
               </div>
 
               <div
-                v-if="!(product.stock?.bySource?.length)"
+                v-if="!(activeItem?.stock?.bySource?.length)"
                 class="text-sm text-[var(--ink-soft)]"
               >
                 Nenhum estoque sincronizado para este item.
@@ -282,7 +294,7 @@ useHead(() => ({
             </h2>
             <div class="mt-4 space-y-3">
               <div
-                v-for="price in product.prices || []"
+                v-for="price in activeItem?.prices || []"
                 :key="`${price.externalId}-${price.sourceKey}`"
                 class="rounded-[22px] border border-[var(--line)] bg-white/70 p-4"
               >

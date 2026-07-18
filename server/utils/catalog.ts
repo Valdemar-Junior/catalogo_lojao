@@ -50,6 +50,14 @@ export function normalizeProductRecord(product: any) {
     .map(normalizeVariantRecord)
     .sort((left: any, right: any) => left.sortOrder - right.sortOrder)
 
+  // A grade whose image filename held no recognizable finish gets a clean sequential
+  // name instead of junk like "D Nq Np 2x 628758..." — the photo shows the real finish.
+  variants.forEach((variant: any, index: number) => {
+    if (!variant.label) {
+      variant.label = `Variação ${index + 1}`
+    }
+  })
+
   // Stock priority: kit components < color variants (grades) < the product's own stock.
   // A model with grades has no stock of its own — its availability is the sum of its
   // grades' stock, so the parent card/total reflects what's actually in the colors.
@@ -128,14 +136,54 @@ export function aggregateVariantStocks(variants: any[]) {
   return [...sourceMap.values()]
 }
 
-// Variant labels come from inconsistent SGI image descriptions. Normalize casing and
-// fall back to the codigo (not a digits-only "1133 1" scrap) when there's no real name.
-function formatVariantLabel(displayLabel: string | null, codigo: string) {
-  const raw = (displayLabel ?? '').trim()
-  if (raw === '' || /^[\d\s]+$/.test(raw)) {
-    return codigo
+// SGI has no color/finish field for grades — the only hint is the image filename, which
+// is wildly inconsistent (real names like "...Cinamomo_Off_White" but also junk like
+// "D_NQ_NP_2X_628758-MLB..." or "download (9).jpg"). So we extract a KNOWN furniture
+// finish from the label; callers fall back to "Variação N" when none is found.
+// Multi-word terms first so "off white" wins over a bare word.
+const FINISH_TERMS = [
+  // wood/MDF finishes
+  'off white', 'offwhite', 'cinamomo', 'jequitiba', 'amendoa', 'amêndoa', 'nogueira',
+  'nogal', 'imbuia', 'imbuya', 'freijo', 'freijó', 'castanho', 'carvalho', 'tabaco',
+  'wengue', 'rustico', 'rústico', 'naturale', 'naturalle', 'natural', 'canela', 'cacau',
+  'caramelo', 'avela', 'avelã', 'savana', 'damasco', 'malbec', 'terrara', 'nature', 'mel',
+  'ipe', 'ipê',
+  // neutrals / fabric colors
+  'branco', 'preto', 'cinza', 'grafite', 'chumbo', 'bege', 'marrom', 'verde', 'musgo',
+  'azul', 'marinho', 'vermelho', 'rosa', 'amarelo', 'laranja', 'roxo', 'vinho', 'bordo',
+  'bordô', 'terracota', 'turquesa', 'chocolate', 'areia', 'gelo', 'fendi', 'palha', 'trigo'
+]
+
+function titleCasePt(text: string): string {
+  return text.replace(
+    /\p{L}[\p{L}]*/gu,
+    (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+  )
+}
+
+function extractFinishLabel(displayLabel: string | null): string {
+  const text = (displayLabel ?? '').toLowerCase().replace(/[_\-.]+/g, ' ')
+  const matches: Array<{ term: string; index: number }> = []
+
+  for (const term of FINISH_TERMS) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const found = text.match(new RegExp(`\\b${escaped}\\b`))
+    if (found && found.index !== undefined) {
+      matches.push({ term, index: found.index })
+    }
   }
-  return raw.toLowerCase().replace(/\b\p{L}/gu, (char) => char.toUpperCase())
+
+  if (matches.length === 0) {
+    return ''
+  }
+
+  matches.sort((left, right) => left.index - right.index)
+  const seen = new Set<string>()
+  const ordered = matches
+    .map((match) => match.term)
+    .filter((term) => !seen.has(term) && seen.add(term))
+
+  return titleCasePt(ordered.join(' '))
 }
 
 export function normalizeVariantRecord(variant: CatalogVariantRow) {
@@ -151,7 +199,16 @@ export function normalizeVariantRecord(variant: CatalogVariantRow) {
     externalId: variant.external_id,
     codigo: variant.codigo,
     descricao: variant.descricao,
-    label: formatVariantLabel(variant.display_label, variant.codigo),
+    // Look across the display label AND every image filename for a known finish — the
+    // real color name is sometimes only in a later photo, not the first one.
+    label: extractFinishLabel(
+      [
+        variant.display_label,
+        ...(variant.product_variant_images ?? []).map((image: any) => image.description)
+      ]
+        .filter(Boolean)
+        .join(' ')
+    ),
     sortOrder: variant.sort_order ?? 0,
     images: (variant.product_variant_images ?? []).map((image: any) => ({
       id: image.id,
