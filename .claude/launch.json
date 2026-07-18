@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nuxt-dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["node_modules/nuxt/bin/nuxt.mjs", "dev"],
+      "port": 3000
+    }
+  ]
+}

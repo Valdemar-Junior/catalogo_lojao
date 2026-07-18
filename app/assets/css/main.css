@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f4f0ea;
+  --surface: #fffdf8;
+  --surface-muted: #f7f2ea;
+  --line: #e6dacb;
+  --ink: #23170e;
+  --ink-soft: #6d5a4a;
+  --brand: #0f2f57;
+  --brand-strong: #0a2341;
+  --accent: #ff7f32;
+  --accent-soft: #ffe3d2;
+  --success: #2f9e6f;
+}
+
+html {
+  background: linear-gradient(180deg, #f8f4ee 0%, #efe6db 100%);
+  color: var(--ink);
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(255, 181, 114, 0.2), transparent 28%),
+    radial-gradient(circle at top right, rgba(15, 47, 87, 0.12), transparent 24%),
+    linear-gradient(180deg, #f8f4ee 0%, #efe6db 100%);
+  color: var(--ink);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.page-shell {
+  min-height: 100vh;
+}
+
+.container-mobile {
+  width: min(100%, 1120px);
+  margin-inline: auto;
+  padding-inline: 1rem;
+}
+
+.glass-card {
+  background: rgba(255, 253, 248, 0.9);
+  border: 1px solid rgba(230, 218, 203, 0.9);
+  box-shadow: 0 20px 40px rgba(53, 35, 20, 0.08);
+  backdrop-filter: blur(12px);
+}
